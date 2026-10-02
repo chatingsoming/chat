@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chatly</title>
+<style>
+:root{--bg:#10141c;--panel:#182030;--line:#26324a;--text:#e8edf7;--mute:#8d9bb5;--me:#2f6df6;--them:#222d44;--ok:#27c485;--bad:#ef5b5b}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,sans-serif}
+button,input,select{font:inherit;color:inherit}
+input,select{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 12px;width:100%}
+button{background:var(--me);border:0;border-radius:10px;padding:10px 14px;cursor:pointer}
+button.ghost{background:var(--panel);border:1px solid var(--line)}
+button:focus-visible,input:focus-visible{outline:2px solid #8fb0ff;outline-offset:2px}
+.hide{display:none!important}
+#auth{max-width:380px;margin:0 auto;padding:12vh 20px;display:grid;gap:10px}
+#auth h1{margin:0 0 6px;font-size:30px}
+#err{color:var(--bad);min-height:20px;font-size:14px}
+#app{height:100%;display:grid;grid-template-columns:320px 1fr}
+#side{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+#side header,#chatHead{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+#side header b{flex:1}
+.sec{padding:10px 14px;color:var(--mute);font-size:13px}
+#lists{overflow:auto;flex:1}
+.row{display:flex;align-items:center;gap:8px;padding:10px 14px;cursor:pointer}
+.row:hover,.row.on{background:var(--panel)}
+.row span{flex:1}
+.av{width:34px;height:34px;border-radius:50%;background:var(--me);display:grid;place-items:center;font-weight:700}
+#main{display:flex;flex-direction:column;min-height:0}
+#msgs{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:6px}
+.m{max-width:75%;padding:8px 12px;border-radius:14px;background:var(--them);align-self:flex-start;word-break:break-word;position:relative}
+.m.me{background:var(--me);align-self:flex-end}
+.m.gone{opacity:.6;font-style:italic}
+.m small{display:block;color:#ffffffa0;font-size:11px;margin-top:2px}
+.m .acts{display:none;gap:6px;margin-top:6px}
+.m:focus-within .acts,.m:hover .acts{display:flex}
+.acts button{padding:3px 8px;font-size:12px;background:#0003}
+#send{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line)}
+#empty{margin:auto;color:var(--mute)}
+#back{display:none}
+@media(max-width:700px){
+ #app{grid-template-columns:1fr}
+ #main{display:none}
+ #app.chat #side{display:none}
+ #app.chat #main{display:flex}
+ #back{display:block}
+ .m .acts{display:flex}
+}
+</style>
+</head>
+<body>
+
+<form id="auth">
+  <h1>Chatly</h1>
+  <input id="email" type="email" placeholder="Email" autocomplete="email" required>
+  <input id="pass" type="password" placeholder="Password (6+ characters)" autocomplete="current-password" required>
+  <input id="uname" placeholder="Choose a username (sign up only)">
+  <select id="privacy"><option value="public">Public profile</option><option value="private">Private profile</option></select>
+  <button type="submit" id="signup">Create account</button>
+  <button type="button" class="ghost" id="login">Log in</button>
+  <div id="err" role="alert"></div>
+</form>
+
+<div id="app" class="hide">
+  <aside id="side">
+    <header><b id="me"></b><button class="ghost" id="rename">Rename</button><button class="ghost" id="logout">Log out</button></header>
+    <div style="padding:10px 14px;display:flex;gap:8px"><input id="find" placeholder="Find a username"><button id="add">Add</button></div>
+    <div id="lists"></div>
+  </aside>
+  <section id="main">
+    <div id="empty">Pick a friend to start chatting</div>
+    <div id="chatHead" class="hide"><button class="ghost" id="back">Back</button><b id="peer"></b></div>
+    <div id="msgs" class="hide"></div>
+    <form id="send" class="hide"><input id="txt" placeholder="Message" autocomplete="off"><button>Send</button></form>
+  </section>
+</div>
+
+<script type="module">
+import {createClient} from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+const sb=createClient("https://hsoiswndrnlndjqpjvgr.supabase.co","sb_publishable_oqxclgyAlDKyHVZSbyGvOA_VGhw3262");
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let me=null, profile=null, peer=null, chan=null, fships=[];
+const okName=n=>/^[A-Za-z0-9_.]{3,20}$/.test(n);
+const clean=n=>n.trim().replace(/\s+/g,"_");
+const showErr=m=>{$("err").textContent=m};
+
+$("auth").onsubmit=async e=>{
+  e.preventDefault(); showErr("");
+  const name=clean($("uname").value);
+  if(!okName(name)) return showErr("Username: 3-20 letters, numbers, _ or .");
+  const {data:ex}=await sb.from("profiles").select("id").ilike("username",name).limit(1);
+  if(ex&&ex.length) return showErr("That username is taken.");
+  const {data,error}=await sb.auth.signUp({email:$("email").value,password:$("pass").value,
+    options:{data:{username:name,is_private:$("privacy").value==="private"}}});
+  if(error) return showErr(/database error/i.test(error.message)?"That username is taken.":error.message);
+  if(!data.session) showErr("Account created. Check your email to confirm it, then tap Log in.");
+};
+$("login").onclick=async()=>{
+  showErr("");
+  const {error}=await sb.auth.signInWithPassword({email:$("email").value,password:$("pass").value});
+  if(error) showErr(error.message);
+};
+$("logout").onclick=()=>sb.auth.signOut();
+
+$("rename").onclick=async()=>{
+  const n=clean(prompt("New username")||""); if(!n) return;
+  if(!okName(n)) return alert("Username: 3-20 letters, numbers, _ or .");
+  const {error}=await sb.from("profiles").update({username:n}).eq("id",me.id);
+  if(error) return alert(/duplicate|unique/i.test(error.message)?"That username is taken.":error.message);
+  profile.username=n; $("me").textContent=n;
+};
+
+sb.auth.onAuthStateChange((_e,session)=>{ setTimeout(()=>enter(session?session.user:null),0); });
+
+async function enter(u){
+  if(chan){sb.removeChannel(chan);chan=null}
+  me=u; peer=null;
+  if(!u){$("auth").classList.remove("hide");$("app").classList.add("hide");return}
+  let p=null;
+  for(let i=0;i<8&&!p;i++){
+    const r=await sb.from("profiles").select("*").eq("id",u.id).maybeSingle();
+    p=r.data; if(!p) await new Promise(r=>setTimeout(r,300));
+  }
+  profile=p||{username:"user"};
+  $("me").textContent=profile.username;
+  $("auth").classList.add("hide");$("app").classList.remove("hide");
+  chan=sb.channel("rt")
+    .on("postgres_changes",{event:"*",schema:"public",table:"friendships"},()=>loadSide())
+    .on("postgres_changes",{event:"*",schema:"public",table:"messages"},()=>{if(peer)loadMsgs()})
+    .subscribe();
+  loadSide();
+}
+
+$("add").onclick=async()=>{
+  const n=clean($("find").value); if(!n) return;
+  const {data}=await sb.from("profiles").select("id,username").ilike("username",n).limit(1);
+  if(!data||!data.length) return alert("No user with that username.");
+  const t=data[0]; if(t.id===me.id) return alert("That's you.");
+  if(fships.some(f=>f.requester===t.id||f.addressee===t.id)) return alert("Already added or pending.");
+  const {error}=await sb.from("friendships").insert({requester:me.id,addressee:t.id});
+  if(error) return alert(error.message);
+  $("find").value=""; loadSide();
+};
+
+async function loadSide(){
+  const {data:fs}=await sb.from("friendships").select("*");
+  fships=fs||[];
+  const ids=[...new Set(fships.map(f=>f.requester===me.id?f.addressee:f.requester))];
+  const names={};
+  if(ids.length){const {data:ps}=await sb.from("profiles").select("id,username").in("id",ids);(ps||[]).forEach(p=>names[p.id]=p.username)}
+  const box=$("lists"); box.innerHTML="";
+  const head=t=>{const d=document.createElement("div");d.className="sec";d.textContent=t;box.append(d)};
+  const other=f=>f.requester===me.id?f.addressee:f.requester;
+  const incoming=fships.filter(f=>f.status==="pending"&&f.addressee===me.id);
+  const friends=fships.filter(f=>f.status==="accepted");
+  const sent=fships.filter(f=>f.status==="pending"&&f.requester===me.id);
+  if(incoming.length){head("Friend requests");incoming.forEach(f=>{
+    const r=document.createElement("div");r.className="row";
+    r.innerHTML=`<span>${esc(names[f.requester]||"?")}</span>`;
+    const a=document.createElement("button");a.textContent="Accept";
+    a.onclick=async()=>{await sb.from("friendships").update({status:"accepted"}).eq("id",f.id);loadSide()};
+    const x=document.createElement("button");x.className="ghost";x.textContent="Decline";
+    x.onclick=async()=>{await sb.from("friendships").delete().eq("id",f.id);loadSide()};
+    r.append(a,x);box.append(r)})}
+  head("Friends");
+  if(!friends.length){const d=document.createElement("div");d.className="sec";d.textContent="No friends yet. Search a username above.";box.append(d)}
+  friends.forEach(f=>{
+    const o=other(f),name=names[o]||"?";
+    const r=document.createElement("div");r.className="row"+(peer&&peer.id===o?" on":"");
+    r.innerHTML=`<div class="av">${esc(name[0].toUpperCase())}</div><span>${esc(name)}</span>`;
+    r.onclick=()=>openChat(o,name);box.append(r)});
+  if(sent.length){head("Sent requests");sent.forEach(f=>{
+    const r=document.createElement("div");r.className="row";
+    r.innerHTML=`<span>${esc(names[f.addressee]||"?")}</span><small>Waiting</small>`;box.append(r)})}
+}
+
+function openChat(id,name){
+  peer={id,name};
+  $("app").classList.add("chat");
+  $("empty").classList.add("hide");
+  ["chatHead","msgs","send"].forEach(i=>$(i).classList.remove("hide"));
+  $("peer").textContent=name;
+  loadSide(); loadMsgs();
+}
+
+async function loadMsgs(){
+  if(!peer) return;
+  const p=peer.id,m=me.id;
+  const {data}=await sb.from("messages").select("*")
+    .or(`and(sender.eq.${m},receiver.eq.${p}),and(sender.eq.${p},receiver.eq.${m})`)
+    .order("created_at");
+  const box=$("msgs"); box.innerHTML="";
+  (data||[]).forEach(msg=>{
+    if((msg.deleted_for||[]).includes(m)) return;
+    const mine=msg.sender===m;
+    const el=document.createElement("div");
+    el.className="m"+(mine?" me":"")+(msg.unsent?" gone":"");
+    el.tabIndex=0;
+    el.innerHTML=msg.unsent?"This message was unsent":esc(msg.body);
+    const t=new Date(msg.created_at).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+    el.insertAdjacentHTML("beforeend",`<small>${t}</small>`);
+    const acts=document.createElement("div");acts.className="acts";
+    const forMe=document.createElement("button");forMe.textContent="Delete for me";
+    forMe.onclick=async()=>{await sb.rpc("hide_message",{mid:msg.id});loadMsgs()};
+    acts.append(forMe);
+    if(mine){
+      if(!msg.unsent){const un=document.createElement("button");un.textContent="Unsend";
+        un.onclick=async()=>{await sb.rpc("unsend_message",{mid:msg.id});loadMsgs()};acts.append(un)}
+      const del=document.createElement("button");del.textContent="Delete forever";
+      del.onclick=async()=>{if(confirm("Delete this message for everyone, permanently?")){await sb.from("messages").delete().eq("id",msg.id);loadMsgs()}};
+      acts.append(del);
+    }
+    el.append(acts);box.append(el);
+  });
+  box.scrollTop=box.scrollHeight;
+}
+
+$("back").onclick=()=>$("app").classList.remove("chat");
+$("send").onsubmit=async e=>{
+  e.preventDefault();
+  const body=$("txt").value.trim(); if(!body||!peer) return;
+  $("txt").value="";
+  const {error}=await sb.from("messages").insert({sender:me.id,receiver:peer.id,body});
+  if(error) alert(error.message);
+  loadMsgs();
+};
+</script>
+</body>
+  </html>
